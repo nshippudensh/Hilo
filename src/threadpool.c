@@ -82,7 +82,7 @@ void threadpool_destroy(threadpool_t *pool) {
 }
 
 void threadpool_add_task(threadpool_t *pool, void(*function)(void*), void *arg) {
-  pthread_mutex_lock(&(pool->lock));
+  /*pthread_mutex_lock(&(pool->lock));
 
   int next_rear = (pool->queue_back + 1) % QUEUE_SIZE;
 
@@ -96,7 +96,31 @@ void threadpool_add_task(threadpool_t *pool, void(*function)(void*), void *arg) 
     printf("Task queue is full! Cannot add more tasks.\n");
   }
 
-  pthread_mutex_unlock(&(pool->lock));
+  pthread_mutex_unlock(&(pool->lock));*/
+  // 1. Protección de seguridad: Evitar punteros nulos
+    if (pool == NULL || function == NULL) return;
+
+    pthread_mutex_lock(&(pool->lock));
+
+    // 2. Verificación estricta del límite
+    if (pool->queued < QUEUE_SIZE) {
+        // Insertamos la tarea
+        pool->task_queue[pool->queue_back].fn = function;
+        pool->task_queue[pool->queue_back].arg = arg;
+
+        // 3. Incremento circular SEGURO
+        pool->queue_back = (pool->queue_back + 1) % QUEUE_SIZE;
+        pool->queued++;
+
+        // Despertar a un hilo
+        pthread_cond_signal(&(pool->notify));
+    } else {
+        // Si la cola está llena, simplemente no hacemos nada.
+        // Los tests de error esperan que el programa NO explote aquí.
+        fprintf(stderr, "Advertencia: Cola llena, tarea ignorada.\n");
+    }
+
+    pthread_mutex_unlock(&(pool->lock));
 }
 
 void example_task(void *arg) {

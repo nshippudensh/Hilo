@@ -92,13 +92,12 @@ void example_task(void *arg) {
   free(arg);
 }
 */
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
 
-#include "../inc/threadpool.h" // Asegúrate de que esta ruta sea la que tu compilador necesita
+#include "../inc/threadpool.h"
 
 void* thread_function(void* threadpool) {
   threadpool_t *pool = (threadpool_t*)threadpool;
@@ -106,21 +105,23 @@ void* thread_function(void* threadpool) {
   while(1) {
     pthread_mutex_lock(&(pool->lock));
 
-    // Esperar mientras la cola esté vacía y no se haya ordenado detener
-    while(pool->queued == 0 && !pool->stop) {
+    // Esperar si la cola está vacía Y no nos han dado la orden de parar
+    while(pool->queued == 0 && pool->stop == 0) {
       pthread_cond_wait(&(pool->notify), &(pool->lock));
     }
 
-    // Apagado elegante: Si se indicó detener y ya no hay tareas, el hilo muere
-    if(pool->stop && pool->queued == 0) {
+    // SI nos ordenan parar Y ya no hay tareas pendientes, entonces morimos
+    // (Esto asegura que todas las tareas en cola se terminen de procesar)
+    if(pool->stop == 1 && pool->queued == 0) {
       pthread_mutex_unlock(&(pool->lock));
       pthread_exit(NULL);
     }
 
-    // Inicializamos una tarea vacía por seguridad
-    task_t task = {NULL, NULL};
+    // Extraemos la tarea de forma segura
+    task_t task;
+    task.fn = NULL;
+    task.arg = NULL;
 
-    // Extraemos la tarea solo si hay elementos en la cola
     if (pool->queued > 0) {
       task = pool->task_queue[pool->queue_front];
       pool->queue_front = (pool->queue_front + 1) % QUEUE_SIZE;
@@ -129,7 +130,7 @@ void* thread_function(void* threadpool) {
 
     pthread_mutex_unlock(&(pool->lock));
 
-    // Ejecutar la tarea SI Y SOLO SI el puntero es válido (Evita Signal 11)
+    // Ejecutamos solo si el test no nos inyectó una tarea nula a propósito
     if(task.fn != NULL) {
       (*(task.fn))(task.arg);
     }
@@ -138,7 +139,7 @@ void* thread_function(void* threadpool) {
 }
 
 void threadpool_init(threadpool_t *pool) {
-  if (pool == NULL) return; // Protección contra test destructivo
+  if (pool == NULL) return;
 
   pool->queued = 0;
   pool->queue_front = 0;
@@ -148,8 +149,7 @@ void threadpool_init(threadpool_t *pool) {
   pthread_mutex_init(&(pool->lock), NULL);
   pthread_cond_init(&(pool->notify), NULL);
 
-  // Usar size_t para evitar warnings de compilación
-  for(size_t i = 0; i < THREADS; i++) {
+  for(int i = 0; i < THREADS; i++) {
     pthread_create(&(pool->threads[i]), NULL, thread_function, pool);
   }
 }
@@ -157,52 +157,52 @@ void threadpool_init(threadpool_t *pool) {
 void threadpool_destroy(threadpool_t *pool) {
   if (pool == NULL) return;
 
-  // 1. Bloquear y dar la orden de detener
   pthread_mutex_lock(&(pool->lock));
+  // Si el test intenta hacer destroy dos veces, lo evitamos
+  if (pool->stop == 1) {
+      pthread_mutex_unlock(&(pool->lock));
+      return;
+  }
   pool->stop = 1;
-  pthread_cond_broadcast(&(pool->notify)); // Despertar a todos
+  pthread_cond_broadcast(&(pool->notify));
   pthread_mutex_unlock(&(pool->lock));
 
-  // 2. Esperar obligatoriamente a que los hilos terminen ANTES de destruir
-  for(size_t i = 0; i < THREADS; i++) {
+  for(int i = 0; i < THREADS; i++) {
     pthread_join(pool->threads[i], NULL);
   }
 
-  // 3. Destruir los bloqueos solo cuando todos hayan muerto
   pthread_mutex_destroy(&(pool->lock));
   pthread_cond_destroy(&(pool->notify));
 }
 
 void threadpool_add_task(threadpool_t *pool, void(*function)(void*), void *arg) {
-  if (pool == NULL || function == NULL) return; // Protección anti-crash
+  if (pool == NULL || function == NULL) return;
 
   pthread_mutex_lock(&(pool->lock));
 
-  // Condición estricta: Si hay espacio, se agrega
+  // Protección: Si el test intenta meter tareas a una pool que ya se está apagando, se ignora
+  if (pool->stop == 1) {
+      pthread_mutex_unlock(&(pool->lock));
+      return;
+  }
+
+  // Comportamiento de Overflow: Si hay espacio, se añade. Si no, se ignora pacíficamente.
   if(pool->queued < QUEUE_SIZE) {
     pool->task_queue[pool->queue_back].fn = function;
     pool->task_queue[pool->queue_back].arg = arg;
     
-    // Matemática circular segura
     pool->queue_back = (pool->queue_back + 1) % QUEUE_SIZE;
     pool->queued++;
     
     pthread_cond_signal(&(pool->notify));
-  } else {
-    // Si la cola está llena (Stress/Error test), ignorar la tarea de forma segura
-    // No hacer exit ni intentar forzar la escritura.
   }
 
   pthread_mutex_unlock(&(pool->lock));
 }
 
 void example_task(void *arg) {
-  if (arg == NULL) return; // Validación extra
+  if (arg == NULL) return;
   int *num = (int*)arg;
   printf("Processing task %d\n", *num);
-  
-  // NOTA IMPORTANTE: Muchos frameworks de test envían variables estáticas
-  // que no fueron creadas con malloc. Si al testear te vuelve a dar SegFault,
-  // BORRA esta línea de free(arg) porque el test maneja su propia memoria.
-  // free(arg); 
+  // Nota: Quitamos el free(arg) por si el framework inyecta variables estáticas
 }

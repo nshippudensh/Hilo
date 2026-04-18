@@ -47,7 +47,9 @@ void* thread_function(void* threadpool) {
     pthread_mutex_unlock(&(pool->lock));
 
     /* Finalmente, el thread ejecuta la tarea recuperada llamando al pointer almacenado en task_t*/
-    (*(task.fn))(task.arg);
+    if (task.fn != NULL) {
+      (*(task.fn))(task.arg);
+    }
   }
   return NULL;
 }

@@ -3,7 +3,7 @@
 #include <pthread.h>
 #include <unistd.h>
 
-#include "threadpool.h"
+#include "../inc/threadpool.h"
 
 
 int main() {
